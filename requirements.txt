@@ -1,0 +1,7 @@
+ultralytics
+opencv-python
+PyQt6
+yt_dlp
+pytesseract
+numpy
+tkinter
