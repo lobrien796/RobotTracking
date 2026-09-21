@@ -37,17 +37,16 @@ ydl_opts = {
     'logger': None
     }
 
-
-
 def load_model():
-    global model_loaded, model
+    global model_loaded, model_path, model
     model_loaded = True
     try:
         model = YOLO(model_path)
         model_loaded = True
     except Exception as e:
-        print(f"Tried loading default model {model_path} but failed: {e}")
+        print(f"Tried loading model {model_path} but failed: {e}")
         model_loaded = False
+        model_path = ""
 load_model()
 
 
@@ -106,7 +105,7 @@ class MainWindow(QMainWindow):
         divider_vline = QFrame()
         divider_vline.setFrameShape(QFrame.Shape.VLine)
         divider_vline.setFrameShadow(QFrame.Shadow.Sunken)
-
+        
         self.model_label = QLabel(f"<b>Model: </b>{model_path}")
         self.model_label.setFont(QFont("Arial", 10))
         change_model_button = QPushButton("Change Model")
@@ -145,20 +144,20 @@ class MainWindow(QMainWindow):
         start_time_layout.addWidget(self.start_time_input)
         start_time_layout.addWidget(self.start_time_go_button)
 
-        self.seconds_change = 0
-        self.seconds_forward_button = QPushButton(f"↻ {self.seconds_change}")
+        self.seconds_change = 1
+        self.seconds_forward_button = QPushButton(f"↻ {self.seconds_change} sec")
         self.seconds_forward_button.setEnabled(False)
-        self.seconds_back_button = QPushButton(f"↺ {self.seconds_change}")
+        self.seconds_back_button = QPushButton(f"↺ {self.seconds_change} sec")
         self.seconds_back_button.setEnabled(False)
-        self.seconds_change_increase = QPushButton("+")
-        self.seconds_change_increase.setEnabled(False)
-        self.seconds_change_decrease = QPushButton("-")
-        self.seconds_change_decrease.setEnabled(False)
+        self.seconds_change_increase_button = QPushButton("+")
+        self.seconds_change_increase_button.setEnabled(False)
+        self.seconds_change_decrease_button = QPushButton("-")
+        self.seconds_change_decrease_button.setEnabled(False)
         seconds_change_layout = QHBoxLayout()
         seconds_change_layout.addWidget(self.seconds_forward_button)
         seconds_change_layout.addWidget(self.seconds_back_button)
-        seconds_change_layout.addWidget(self.seconds_change_increase)
-        seconds_change_layout.addWidget(self.seconds_change_decrease)
+        seconds_change_layout.addWidget(self.seconds_change_increase_button)
+        seconds_change_layout.addWidget(self.seconds_change_decrease_button)
 
         #Sidebar addRow
         sidebar_layout.addRow(model_layout)
@@ -183,6 +182,10 @@ class MainWindow(QMainWindow):
         self.yt_link_input.returnPressed.connect(self.get_new_yt)
         yt_link_button.clicked.connect(self.get_new_yt)
         self.start_time_go_button.clicked.connect(self.skip_to_frame_input)
+        self.seconds_forward_button.clicked.connect(self.skip_seconds_forward)
+        self.seconds_back_button.clicked.connect(self.skip_seconds_back)
+        self.seconds_change_decrease_button.clicked.connect(self.seconds_change_decrease)
+        self.seconds_change_increase_button.clicked.connect(self.seconds_change_increase)
 
         #Main Layout
         main_layout.addWidget(sidebar_widget)
@@ -196,6 +199,15 @@ class MainWindow(QMainWindow):
             if ret:
                 self.current_raw_frame = frame.copy()
                 self.update_canvas_display()
+
+    def display_current_annotation(self):
+        global cap
+        if 'cap' in globals() and cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                self.current_raw_frame = model(frame.copy())[0].plot()
+                self.update_canvas_display()
+
                 
     def update_canvas_display(self):
         if hasattr(self, 'current_raw_frame') and self.current_raw_frame is not None:
@@ -220,7 +232,7 @@ class MainWindow(QMainWindow):
         offset = int(step_amount * fps) if is_seconds else int(step_amount)
         current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
         target_pos = max(0, current_pos + offset -1)
-        print(f"fps: {fps}, offset: {offset}, current_pos: {current_pos}, target pos: {target_pos}")
+        print(f"fps: {fps}, step amount: {step_amount}, is_seconds: {is_seconds}, offset: {offset}, current_pos: {current_pos}, target pos: {target_pos}")
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_pos)
         self.display_current_frame()
     
@@ -241,22 +253,18 @@ class MainWindow(QMainWindow):
             self.handle_arrow_key(event.key())
             event.accept()
             return
-        super().keyPressEvent(event)
+        else:
+            super().keyPressEvent(event)
 
     def handle_arrow_key(self, key):
         if key == Qt.Key.Key_Right:
-            self.step_frame(self.seconds_change, True)
+            self.skip_seconds_forward
         elif key == Qt.Key.Key_Left:
-            self.step_frame(-self.seconds_change, True)
+            self.skip_seconds_back
         elif key == Qt.Key.Key_Down:
-            if self.seconds_change > 0:
-                self.seconds_change -= 1
-                self.seconds_forward_button.setText(f"↻ {self.seconds_change}")
-                self.seconds_back_button.setText(f"↺ {self.seconds_change}")
+            self.seconds_change_increase
         elif key == Qt.Key.Key_Up:
-            self.seconds_change += 1
-            self.seconds_forward_button.setText(f"↻ {self.seconds_change}")
-            self.seconds_back_button.setText(f"↺ {self.seconds_change}")
+            self.seconds_change_decrease
 
     
     def get_new_model(self):
@@ -269,7 +277,10 @@ class MainWindow(QMainWindow):
         if new_model_path and new_model_path.endswith(".pt"):
             model_path = new_model_path
             load_model()
-            self.model_label.setText(f"<b>Model: </b>{Path(model_path).name}")
+            if model_loaded:
+                self.model_label.setText(f"<b>Model: </b>{Path(model_path).name}")
+            else:
+                self.model_label.setText(f"<b>Model: </b> Error - Couldn't load {Path(model_path).name}")
     
     def get_new_yt(self):
         global yt_url
@@ -282,8 +293,8 @@ class MainWindow(QMainWindow):
             self.start_time_go_button.setEnabled(yt_loaded)
             self.seconds_forward_button.setEnabled(yt_loaded)
             self.seconds_back_button.setEnabled(yt_loaded)
-            self.seconds_change_increase.setEnabled(yt_loaded)
-            self.seconds_change_decrease.setEnabled(yt_loaded)
+            self.seconds_change_increase_button.setEnabled(yt_loaded)
+            self.seconds_change_decrease_button.setEnabled(yt_loaded)
             self.setWindowTitle(f"Robot Tracking - {yt_vid_name}")
 
     def skip_to_frame_input(self):
@@ -296,6 +307,20 @@ class MainWindow(QMainWindow):
 
         target_seconds = self.start_time_input.time().hour()*3600 + self.start_time_input.time().minute() * 60 + self.start_time_input.time().second()
         self.seek_frame(target_seconds*fps)
+    
+    def skip_seconds_forward(self):
+        self.step_frame(self.seconds_change, True)
+    def skip_seconds_back(self):
+        self.step_frame(-self.seconds_change, True)
+    def seconds_change_increase(self,):
+        self.seconds_change += 1
+        self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
+        self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
+    def seconds_change_decrease(self):
+        if self.seconds_change > 0:
+            self.seconds_change -= 1
+            self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
+            self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
 
 
 app = QApplication(sys.argv)
