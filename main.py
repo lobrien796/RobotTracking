@@ -3,12 +3,12 @@ try:
     import os
     from ultralytics import YOLO
     import cv2
-    from PyQt6.QtWidgets import QApplication, QMainWindow, QHBoxLayout, QVBoxLayout, QFormLayout, QLabel, QWidget, QFrame, QPushButton, QLineEdit, QTimeEdit
+    from PyQt6.QtWidgets import QApplication, QMainWindow, QHBoxLayout, QVBoxLayout, QFormLayout, QLabel, QWidget, QFrame, QPushButton, QLineEdit, QTimeEdit, QSpacerItem, QSizePolicy
     from PyQt6.QtGui import QImage, QPixmap, QFont, QResizeEvent
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import Qt, QPoint
     from yt_dlp import YoutubeDL
     import pytesseract
-    import numpy as np
+    from numpy import ndarray
     from pathlib import Path
     import tkinter as tk
     from tkinter import filedialog
@@ -35,7 +35,14 @@ ydl_opts = {
     'quiet': True,
     'no_warnings': True,
     'logger': None
-    }
+}
+
+homography_points = []
+homography_matrix = None
+homography_mask = None
+current_status = "yt" #can be "yt", "homography", "start"
+
+field_image = None
 
 def load_model():
     global model_loaded, model_path, model
@@ -51,12 +58,14 @@ load_model()
 
 
 def load_yt():
-    global video_direct_url, cap, yt_vid_name, yt_is_live, yt_loaded
+    global video_direct_url, cap, yt_vid_name, yt_is_live, yt_loaded, yt_width, yt_height, field_image
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(yt_url, download=False)
             yt_vid_name = info_dict.get("title",None)
             yt_is_live = info_dict.get("live_status")
+            yt_width = info_dict.get("width")
+            yt_height = info_dict.get("height")
             print(f"Name: {yt_vid_name}, Live status: {yt_is_live}")
             
             if 'url' in info_dict:
@@ -66,6 +75,9 @@ def load_yt():
             else:
                 video_direct_url = info_dict['formats'][0]['url']
 
+            field_image = cv2.imread(f"{int(info_dict['upload_date'][:4])}.png")
+            if field_image is None:
+                print(f"Error: Could not open {int(info_dict['upload_date'][:4])}.png")
             cap = cv2.VideoCapture(video_direct_url)
             if not cap.isOpened():
                 print("Error: Could not open YouTube video stream in OpenCV.")
@@ -88,7 +100,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Robot Tracking")
-        self.setMinimumSize(1320, 540)
+        self.setMinimumSize(1320, 1080)
 
         #Central Widget setup
         central_widget = QWidget()
@@ -155,14 +167,6 @@ class MainWindow(QMainWindow):
         ]:
             control.setFixedWidth(30)
 
-        #Start disabled until youtube is loaded
-        for control in[
-                self.start_time_input, self.start_time_go_button, self.seconds_forward_button, self.seconds_back_button, 
-                self.seconds_change_increase_button, self.seconds_change_decrease_button, self.frame_forward_button, self.frame_back_button
-            ]:
-                control.setEnabled(False)
-                control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
         seconds_change_layout = QHBoxLayout()
         seconds_change_layout.addWidget(self.frame_back_button)
         seconds_change_layout.addWidget(self.frame_forward_button)
@@ -170,14 +174,40 @@ class MainWindow(QMainWindow):
         seconds_change_layout.addWidget(self.seconds_back_button)
         seconds_change_layout.addWidget(self.seconds_change_increase_button)
         seconds_change_layout.addWidget(self.seconds_change_decrease_button)
+        seconds_change_HLine = QFrame()
+        seconds_change_HLine.setFrameShape(QFrame.Shape.HLine)
+        seconds_change_HLine.setFrameShadow(QFrame.Shadow.Sunken)
+
+        self.homography_points_label = QLabel("")
+        
+        spacer = QSpacerItem(360, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.start_button = QPushButton("Start")
+        self.start_button.setStyleSheet("QPushButton { background-color: #4cc2ff; color: #111111; border: 1px solid #005a9e; border-radius: 4px; padding: 5px 12px; font-family: 'Segoe UI', sans-serif; font-size: 12px; } QPushButton:hover { background-color: #4cc2ff; border-color: #004b87; } QPushButton:pressed { background-color: #43a1d2; border-color: #003e73; color: #111111; } QPushButton:disabled { background-color: #323232; border-color: #282828; color: #6c6c6c; }")
+
+        #Start disabled until youtube is loaded
+        for control in[
+                self.start_time_input, self.start_time_go_button, self.seconds_forward_button, self.seconds_back_button, 
+                self.seconds_change_increase_button, self.seconds_change_decrease_button, self.frame_forward_button, self.frame_back_button, self.start_button
+            ]:
+                control.setEnabled(False)
+                control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         #Sidebar addRow
         sidebar_layout.addRow(model_layout)
         sidebar_layout.addRow(model_HLine)
+        sidebar_layout.addRow(QLabel(""))
         sidebar_layout.addRow(yt_link_layout)
         sidebar_layout.addRow(yt_HLine)
+        sidebar_layout.addRow(QLabel(""))
         sidebar_layout.addRow(start_time_layout)
         sidebar_layout.addRow(seconds_change_layout)
+        sidebar_layout.addRow(seconds_change_HLine)
+        sidebar_layout.addRow(QLabel(""))
+        sidebar_layout.addRow(QLabel("<b>Homography Matrix Points</b>"))
+        sidebar_layout.addRow(self.homography_points_label)
+
+        sidebar_layout.addItem(spacer)
+        sidebar_layout.addRow(self.start_button)
 
         sidebar_widget = QWidget()
         sidebar_widget.setLayout(sidebar_layout)
@@ -187,7 +217,10 @@ class MainWindow(QMainWindow):
         #Stream Canvas Widget
         self.image_label = QLabel("Stream Area - Add a YouTube video")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.field_label = QLabel("Field - Add a YouTube video")
+        self.field_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         stream_layout.addWidget(self.image_label)
+        stream_layout.addWidget(self.field_label)
         
         #Connections
         change_model_button.clicked.connect(self.get_new_model)
@@ -200,6 +233,7 @@ class MainWindow(QMainWindow):
         self.seconds_change_increase_button.clicked.connect(self.seconds_change_increase)
         self.frame_forward_button.clicked.connect(self.increase_frame)
         self.frame_back_button.clicked.connect(self.decrease_frame)
+        # self.start_button.connect(self.start_button_handler)
 
         #Main Layout
         main_layout.addWidget(sidebar_widget)
@@ -212,7 +246,8 @@ class MainWindow(QMainWindow):
             ret, frame = cap.read()
             if ret:
                 self.current_raw_frame = frame.copy()
-                self.update_canvas_display()
+                self.update_stream_canvas()
+                self.update_field_canvas()
 
     def display_current_annotation(self):
         global cap
@@ -220,19 +255,31 @@ class MainWindow(QMainWindow):
             ret, frame = cap.read()
             if ret:
                 self.current_raw_frame = model(frame.copy())[0].plot()
-                self.update_canvas_display()
+                self.update_stream_canvas()
 
                 
-    def update_canvas_display(self):
+    def update_stream_canvas(self):
         if hasattr(self, 'current_raw_frame') and self.current_raw_frame is not None:
             pixmap = cv_to_pixmap(self.current_raw_frame)
-            self.image_label.setPixmap(
-                pixmap.scaled(
+            scaled_pixmap = pixmap.scaled(
                     self.image_label.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
-            )
+            self.image_label.setPixmap(scaled_pixmap)
+            self.labelX = self.image_label.geometry().x()
+            self.labelY = self.image_label.geometry().y()
+
+    def update_field_canvas(self):
+        pixmap = cv_to_pixmap(field_image)
+        scaled_pixmap = pixmap.scaled(
+            self.field_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.field_label.setPixmap(scaled_pixmap)
+        self.fieldX = self.field_label.geometry().x()
+        self.fieldY = self.field_label.geometry().y()
 
     def step_frame(self, step_amount, is_seconds = False):
         global cap
@@ -260,7 +307,7 @@ class MainWindow(QMainWindow):
     
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
-        self.update_canvas_display()
+        self.update_stream_canvas()
     
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Comma, Qt.Key.Key_Period) and yt_loaded:
@@ -284,7 +331,19 @@ class MainWindow(QMainWindow):
             self.increase_frame()
 
     def mousePressEvent(self, event):
-        print(f"({event.position().x()},{event.position().y()})")
+        mouseX = event.position().x()
+        mouseY = event.position().y()
+        if current_status == "homography" and len(homography_points) <= 3 and self.image_label.pixmap().rect().contains(QPoint(int(mouseX), int(mouseY))):
+            adjustedX = round((mouseX-self.labelX)*(yt_width / self.image_label.pixmap().size().width()), 4)
+            adjustedY = round((mouseY-self.labelY)*(yt_height / self.image_label.pixmap().size().height()), 4)
+            homography_points.append((adjustedX, adjustedY))
+            self.homography_points_label.setText("")
+            for i in range(len(homography_points)):
+                if (i+1)%2 == 0:
+                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homography_points[i][0]},{homography_points[i][1]})\n")
+                else:
+                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homography_points[i][0]},{homography_points[i][1]})   ")
+
         return super().mousePressEvent(event)
 
     
@@ -304,7 +363,7 @@ class MainWindow(QMainWindow):
                 self.model_label.setText(f"<b>Model: </b> Error - Couldn't load {Path(model_path).name}")
     
     def get_new_yt(self):
-        global yt_url
+        global yt_url, current_status
         if self.yt_link_input.text() != "":
             yt_url = self.yt_link_input.text()
             self.image_label.setText("Loading...")
@@ -323,6 +382,9 @@ class MainWindow(QMainWindow):
                 #Clear focus on the timeedit or youtube link area
                 self.yt_link_input.clearFocus()
                 self.setFocus()
+                current_status = "homography"
+                self.image_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self.field_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
             else:
                 self.image_label.setText("Error Loading YT - Please try again")
 
@@ -355,6 +417,10 @@ class MainWindow(QMainWindow):
     def decrease_frame(self):
         self.step_frame(-1)
 
+    # def start_button_handler(self):
+        # global homography_matrix
+        # if current_status == "homography" and len(homography_points) == 4:
+            # homography_matrix, homography_mask = cv2.findHomography
 
 app = QApplication(sys.argv)
 window = MainWindow()
