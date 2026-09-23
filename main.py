@@ -134,26 +134,38 @@ class MainWindow(QMainWindow):
 
         self.start_time_input = QTimeEdit()
         self.start_time_input.setDisplayFormat("hh:mm:ss")
-        self.start_time_input.setEnabled(False)
 
         self.start_time_go_button = QPushButton("Go")
         self.start_time_go_button.setFixedWidth(50)
-        self.start_time_go_button.setEnabled(False)
 
         start_time_layout = QHBoxLayout()
         start_time_layout.addWidget(self.start_time_input)
         start_time_layout.addWidget(self.start_time_go_button)
 
+        self.frame_back_button = QPushButton("<")
+        self.frame_forward_button = QPushButton(">")
         self.seconds_change = 1
         self.seconds_forward_button = QPushButton(f"↻ {self.seconds_change} sec")
-        self.seconds_forward_button.setEnabled(False)
         self.seconds_back_button = QPushButton(f"↺ {self.seconds_change} sec")
-        self.seconds_back_button.setEnabled(False)
         self.seconds_change_increase_button = QPushButton("+")
-        self.seconds_change_increase_button.setEnabled(False)
         self.seconds_change_decrease_button = QPushButton("-")
-        self.seconds_change_decrease_button.setEnabled(False)
+
+        for control in[
+            self.frame_forward_button, self.frame_back_button, self.seconds_change_increase_button, self.seconds_change_decrease_button
+        ]:
+            control.setFixedWidth(30)
+
+        #Start disabled until youtube is loaded
+        for control in[
+                self.start_time_input, self.start_time_go_button, self.seconds_forward_button, self.seconds_back_button, 
+                self.seconds_change_increase_button, self.seconds_change_decrease_button, self.frame_forward_button, self.frame_back_button
+            ]:
+                control.setEnabled(False)
+                control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         seconds_change_layout = QHBoxLayout()
+        seconds_change_layout.addWidget(self.frame_back_button)
+        seconds_change_layout.addWidget(self.frame_forward_button)
         seconds_change_layout.addWidget(self.seconds_forward_button)
         seconds_change_layout.addWidget(self.seconds_back_button)
         seconds_change_layout.addWidget(self.seconds_change_increase_button)
@@ -186,6 +198,8 @@ class MainWindow(QMainWindow):
         self.seconds_back_button.clicked.connect(self.skip_seconds_back)
         self.seconds_change_decrease_button.clicked.connect(self.seconds_change_decrease)
         self.seconds_change_increase_button.clicked.connect(self.seconds_change_increase)
+        self.frame_forward_button.clicked.connect(self.increase_frame)
+        self.frame_back_button.clicked.connect(self.decrease_frame)
 
         #Main Layout
         main_layout.addWidget(sidebar_widget)
@@ -249,22 +263,29 @@ class MainWindow(QMainWindow):
         self.update_canvas_display()
     
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down) and yt_loaded:
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Comma, Qt.Key.Key_Period) and yt_loaded:
             self.handle_arrow_key(event.key())
             event.accept()
             return
-        else:
-            super().keyPressEvent(event)
+        super().keyPressEvent(event)
 
     def handle_arrow_key(self, key):
         if key == Qt.Key.Key_Right:
-            self.skip_seconds_forward
+            self.skip_seconds_forward()
         elif key == Qt.Key.Key_Left:
-            self.skip_seconds_back
+            self.skip_seconds_back()
         elif key == Qt.Key.Key_Down:
-            self.seconds_change_increase
+            self.seconds_change_decrease()
         elif key == Qt.Key.Key_Up:
-            self.seconds_change_decrease
+            self.seconds_change_increase()
+        elif key == Qt.Key.Key_Comma:
+            self.decrease_frame()
+        elif key == Qt.Key.Key_Period:
+            self.increase_frame()
+
+    def mousePressEvent(self, event):
+        print(f"({event.position().x()},{event.position().y()})")
+        return super().mousePressEvent(event)
 
     
     def get_new_model(self):
@@ -289,13 +310,21 @@ class MainWindow(QMainWindow):
             self.image_label.setText("Loading...")
             self.image_label.repaint()
             load_yt()
-            self.start_time_input.setEnabled(yt_loaded)
-            self.start_time_go_button.setEnabled(yt_loaded)
-            self.seconds_forward_button.setEnabled(yt_loaded)
-            self.seconds_back_button.setEnabled(yt_loaded)
-            self.seconds_change_increase_button.setEnabled(yt_loaded)
-            self.seconds_change_decrease_button.setEnabled(yt_loaded)
-            self.setWindowTitle(f"Robot Tracking - {yt_vid_name}")
+
+            #Enable Controls
+            for control in[
+                self.start_time_input, self.start_time_go_button, self.seconds_forward_button, self.seconds_back_button, 
+                self.seconds_change_increase_button, self.seconds_change_decrease_button, self.frame_forward_button, self.frame_back_button
+            ]:
+                control.setEnabled(yt_loaded)
+
+            if yt_loaded:
+                self.setWindowTitle(f"Robot Tracking - {yt_vid_name}")
+                #Clear focus on the timeedit or youtube link area
+                self.yt_link_input.clearFocus()
+                self.setFocus()
+            else:
+                self.image_label.setText("Error Loading YT - Please try again")
 
     def skip_to_frame_input(self):
         global cap
@@ -321,6 +350,10 @@ class MainWindow(QMainWindow):
             self.seconds_change -= 1
             self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
             self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
+    def increase_frame(self):
+        self.step_frame(1)
+    def decrease_frame(self):
+        self.step_frame(-1)
 
 
 app = QApplication(sys.argv)
