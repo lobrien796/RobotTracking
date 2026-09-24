@@ -275,20 +275,30 @@ class MainWindow(QMainWindow):
     #             self.update_stream_canvas()
 
     def update_stream_homography_points(self):
+        first_color = (0,84,3)
+        last_color = (66,219,0)
         self.current_frame = self.current_raw_frame.copy()
         for i, point in enumerate(homography_stream_points):
+            point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / 3), 
+                           first_color[1] + i* int((last_color[1] - first_color[1]) / 3), 
+                           first_color[0] + i* int((last_color[2] - first_color[2]) / 3))
             x, y = int(point[0]), int(point[1])
-            cv2.circle(self.current_frame, (x, y), 8, (0, 17 +i*8, 87 + i*40), -1)
-            cv2.rectangle(self.current_frame, (x,y), (x + 80, y - 20), (0, 17 +i*8, 87 + i*40), -1)
+            cv2.circle(self.current_frame, (x, y), 8, point_color, -1)
+            cv2.rectangle(self.current_frame, (x,y), (x + 80, y - 20), point_color, -1)
             cv2.putText(self.current_frame, f"Point {i+1}", (x + 12, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         self.update_stream_canvas()
 
     def update_field_homography_points(self):
+        first_color = (0,84,3)
+        last_color = (66,219,0)
         self.current_field = field_image.copy()
         for i, point in enumerate(homography_field_points):
+            point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / 3), 
+                           first_color[1] + i* int((last_color[1] - first_color[1]) / 3), 
+                           first_color[0] + i* int((last_color[2] - first_color[2]) / 3))
             x, y = int(point[0]), int(point[1])
-            cv2.circle(self.current_field, (x, y), 8, (0, 17 +i*8, 87 + i*40), -1)
-            cv2.rectangle(self.current_field, (x,y), (x + 80, y - 20), (0, 17 +i*8, 87 + i*40), -1)
+            cv2.circle(self.current_field, (x, y), 8, point_color, -1)
+            cv2.rectangle(self.current_field, (x,y), (x + 80, y - 20), point_color, -1)
             cv2.putText(self.current_field, f"Point {i+1}", (x + 5, y-3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         self.update_field_canvas()
                 
