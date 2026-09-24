@@ -8,7 +8,7 @@ try:
     from PyQt6.QtCore import Qt, QPoint
     from yt_dlp import YoutubeDL
     import pytesseract
-    from numpy import ndarray
+    import numpy as np
     from pathlib import Path
     import tkinter as tk
     from tkinter import filedialog
@@ -37,12 +37,14 @@ ydl_opts = {
     'logger': None
 }
 
-homography_points = []
+homography_stream_points = []
+homography_field_points = []
 homography_matrix = None
-homography_mask = None
-current_status = "yt" #can be "yt", "homography", "start"
+current_status = "yt" #can be "yt", "homography points", "calculate homography", "start"
 
 field_image = None
+field_image_w = 0
+field_image_h = 0
 
 def load_model():
     global model_loaded, model_path, model
@@ -58,7 +60,7 @@ load_model()
 
 
 def load_yt():
-    global video_direct_url, cap, yt_vid_name, yt_is_live, yt_loaded, yt_width, yt_height, field_image
+    global video_direct_url, cap, yt_vid_name, yt_is_live, yt_loaded, yt_width, yt_height, field_image, field_image_w, field_image_h
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(yt_url, download=False)
@@ -75,7 +77,12 @@ def load_yt():
             else:
                 video_direct_url = info_dict['formats'][0]['url']
 
-            field_image = cv2.imread(f"{int(info_dict['upload_date'][:4])}.png")
+            release_year = int(info_dict['upload_date'][:4])
+            if release_year >= 2024:
+                field_image = cv2.imread(f"{release_year}.png")
+            else:
+                field_image = cv2.imread('2026.png')
+            field_image_h, field_image_w = field_image.shape[:2]
             if field_image is None:
                 print(f"Error: Could not open {int(info_dict['upload_date'][:4])}.png")
             cap = cv2.VideoCapture(video_direct_url)
@@ -84,6 +91,7 @@ def load_yt():
                 yt_loaded = False
             else:
                 window.display_current_frame()
+                window.update_field_canvas()
                 yt_loaded = True
     except Exception as e:
         print(f'Error: {e}')
@@ -204,6 +212,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addRow(seconds_change_HLine)
         sidebar_layout.addRow(QLabel(""))
         sidebar_layout.addRow(QLabel("<b>Homography Matrix Points</b>"))
+        sidebar_layout.addRow(QLabel("Select a point on the stream and then\nthe corresponding one on the field"))
         sidebar_layout.addRow(self.homography_points_label)
 
         sidebar_layout.addItem(spacer)
@@ -215,11 +224,11 @@ class MainWindow(QMainWindow):
 
 
         #Stream Canvas Widget
-        self.image_label = QLabel("Stream Area - Add a YouTube video")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stream_label = QLabel("Stream Area - Add a YouTube video")
+        self.stream_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.field_label = QLabel("Field - Add a YouTube video")
         self.field_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        stream_layout.addWidget(self.image_label)
+        stream_layout.addWidget(self.stream_label)
         stream_layout.addWidget(self.field_label)
         
         #Connections
@@ -233,21 +242,27 @@ class MainWindow(QMainWindow):
         self.seconds_change_increase_button.clicked.connect(self.seconds_change_increase)
         self.frame_forward_button.clicked.connect(self.increase_frame)
         self.frame_back_button.clicked.connect(self.decrease_frame)
-        # self.start_button.connect(self.start_button_handler)
+        self.start_button.clicked.connect(self.start_button_handler)
 
         #Main Layout
         main_layout.addWidget(sidebar_widget)
         main_layout.addWidget(divider_vline)
         main_layout.addLayout(stream_layout)
 
+    def transform_point(self, x,y):
+        src_point = np.array([[x,y]], dtype=np.float32)
+        src_point_reshaped = src_point.reshape(-1,1,2)
+        dst_point_reshaped = cv2.perspectiveTransform(src_point_reshaped, homography_matrix)
+        return dst_point_reshaped.reshape(-1,2)[0]
+
     def display_current_frame(self):
         global cap
         if 'cap' in globals() and cap.isOpened():
             ret, frame = cap.read()
             if ret:
-                self.current_raw_frame = frame.copy()
+                self.current_raw_frame = frame.copy()                 
                 self.update_stream_canvas()
-                self.update_field_canvas()
+
 
     def display_current_annotation(self):
         global cap
@@ -257,29 +272,39 @@ class MainWindow(QMainWindow):
                 self.current_raw_frame = model(frame.copy())[0].plot()
                 self.update_stream_canvas()
 
+    def update_stream_homography_points(self):
+        
+        for point in homography_stream_points:
+            self.current_raw_frame = cv2.circle(self.current_raw_frame, point, 4, '#FF0000')
+        self.update_stream_canvas()
+
+    def update_field_homography_points(self):
+        for point in homography_field_points:
+            self.current_raw_field = cv2.circle(self.current_raw_field, point, 4, "#FF0000")
+        self.update_field_canvas()
                 
     def update_stream_canvas(self):
         if hasattr(self, 'current_raw_frame') and self.current_raw_frame is not None:
             pixmap = cv_to_pixmap(self.current_raw_frame)
             scaled_pixmap = pixmap.scaled(
-                    self.image_label.size(),
+                    self.stream_label.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
-            self.image_label.setPixmap(scaled_pixmap)
-            self.labelX = self.image_label.geometry().x()
-            self.labelY = self.image_label.geometry().y()
+            self.stream_label.setPixmap(scaled_pixmap)
+            self.stream_labelX = self.stream_label.geometry().x()
+            self.stream_labelY = self.stream_label.geometry().y()
 
     def update_field_canvas(self):
-        pixmap = cv_to_pixmap(field_image)
+        pixmap = cv_to_pixmap(self.current_raw_field)
         scaled_pixmap = pixmap.scaled(
             self.field_label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
         self.field_label.setPixmap(scaled_pixmap)
-        self.fieldX = self.field_label.geometry().x()
-        self.fieldY = self.field_label.geometry().y()
+        self.field_labelX = self.field_label.geometry().x()
+        self.field_labelY = self.field_label.geometry().y()
 
     def step_frame(self, step_amount, is_seconds = False):
         global cap
@@ -331,19 +356,34 @@ class MainWindow(QMainWindow):
             self.increase_frame()
 
     def mousePressEvent(self, event):
+        global current_status, homography_field_points, homography_stream_points
         mouseX = event.position().x()
         mouseY = event.position().y()
-        if current_status == "homography" and len(homography_points) <= 3 and self.image_label.pixmap().rect().contains(QPoint(int(mouseX), int(mouseY))):
-            adjustedX = round((mouseX-self.labelX)*(yt_width / self.image_label.pixmap().size().width()), 4)
-            adjustedY = round((mouseY-self.labelY)*(yt_height / self.image_label.pixmap().size().height()), 4)
-            homography_points.append((adjustedX, adjustedY))
-            self.homography_points_label.setText("")
-            for i in range(len(homography_points)):
-                if (i+1)%2 == 0:
-                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homography_points[i][0]},{homography_points[i][1]})\n")
-                else:
-                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homography_points[i][0]},{homography_points[i][1]})   ")
+        if current_status == "homography points" and len(homography_field_points) <= 3:
+            if len(homography_stream_points) <= len(homography_field_points):
+                adjustedX = mouseX-self.stream_labelX
+                adjustedY = mouseY-self.stream_labelY
+                homographyX = round(adjustedX *(yt_width / self.stream_label.pixmap().size().width()), 4)
+                homographyY = round(adjustedY * (yt_height / self.stream_label.pixmap().size().height()), 4)
 
+                if self.stream_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
+                    homography_stream_points.append((homographyX, homographyY))
+                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY}) ⟶ ")
+
+            elif len(homography_stream_points) > len(homography_field_points):
+                adjustedX = mouseX-self.field_labelX
+                adjustedY = mouseY-self.field_labelY
+                homographyX = round(adjustedX * (field_image_w / self.field_label.pixmap().size().width()), 4)
+                homographyY = round(adjustedY * (field_image_h / self.field_label.pixmap().size().height()), 4)
+
+                if self.field_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
+                    homography_field_points.append((homographyX, homographyY))
+                    self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY})\n")
+
+            if len(homography_stream_points) == 4 and len(homography_field_points) == 4:
+                self.start_button.setEnabled(True)
+                self.start_button.setText("Calculate Homography")
+                current_status = "calculate homography"
         return super().mousePressEvent(event)
 
     
@@ -366,8 +406,8 @@ class MainWindow(QMainWindow):
         global yt_url, current_status
         if self.yt_link_input.text() != "":
             yt_url = self.yt_link_input.text()
-            self.image_label.setText("Loading...")
-            self.image_label.repaint()
+            self.stream_label.setText("Loading...")
+            self.stream_label.repaint()
             load_yt()
 
             #Enable Controls
@@ -382,11 +422,16 @@ class MainWindow(QMainWindow):
                 #Clear focus on the timeedit or youtube link area
                 self.yt_link_input.clearFocus()
                 self.setFocus()
-                current_status = "homography"
-                self.image_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-                self.field_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+                current_status = "homography points"
+                self.stream_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self.field_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                # # stream_pixmap_w = self.stream_label.pixmap().size().width()
+                # # stream_pixmap_h =self.stream_label.pixmap().size().height()
+                # # field_pixmap_h = self.field_label.pixmap().size().height()
+                # # self.setMinimumSize(360+stream_pixmap_w/2, self.stream_label.pixmap().size().height()*2 + self.field_label.pixmap().size().height()*2)
+                # self.setMinimumSize(360+int(self.stream_label.pixmap().size().width()/2), int(self.stream_label.pixmap().size().height()/2) + int(self.field_label.pixmap().size().height()/2))
             else:
-                self.image_label.setText("Error Loading YT - Please try again")
+                self.stream_label.setText("Error Loading YT - Please try again")
 
     def skip_to_frame_input(self):
         global cap
@@ -404,11 +449,12 @@ class MainWindow(QMainWindow):
     def skip_seconds_back(self):
         self.step_frame(-self.seconds_change, True)
     def seconds_change_increase(self,):
-        self.seconds_change += 1
-        self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
-        self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
+        if current_status != "yt":
+            self.seconds_change += 1
+            self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
+            self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
     def seconds_change_decrease(self):
-        if self.seconds_change > 0:
+        if self.seconds_change > 0 and current_status != "yt":
             self.seconds_change -= 1
             self.seconds_forward_button.setText(f"↻ {self.seconds_change} sec")
             self.seconds_back_button.setText(f"↺ {self.seconds_change} sec")
@@ -417,10 +463,20 @@ class MainWindow(QMainWindow):
     def decrease_frame(self):
         self.step_frame(-1)
 
-    # def start_button_handler(self):
-        # global homography_matrix
-        # if current_status == "homography" and len(homography_points) == 4:
-            # homography_matrix, homography_mask = cv2.findHomography
+    def start_button_handler(self):
+        global homography_matrix, homography_mask
+        if current_status == "calculate homography":
+            src_points = np.array(homography_stream_points, dtype=np.float32).reshape(-1, 1, 2)
+            dst_points = np.array(homography_field_points, dtype=np.float32).reshape(-1, 1, 2)
+            homography_matrix = cv2.findHomography(
+                src_points, 
+                dst_points, 
+                method=0, 
+                ransacReprojThreshold=3.0, 
+                mask=None, maxIters=2000, 
+                confidence=0.995
+                )
+            print(homography_matrix)
 
 app = QApplication(sys.argv)
 window = MainWindow()
