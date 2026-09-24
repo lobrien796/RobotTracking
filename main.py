@@ -40,7 +40,7 @@ ydl_opts = {
 homography_stream_points = []
 homography_field_points = []
 homography_matrix = None
-current_status = "yt" #can be "yt", "homography points", "calculate homography", "start"
+current_status = "yt" #can be "yt", "homography points", "homography done", "start"
 
 field_image = None
 field_image_w = 0
@@ -85,13 +85,12 @@ def load_yt():
             field_image_h, field_image_w = field_image.shape[:2]
             if field_image is None:
                 print(f"Error: Could not open {int(info_dict['upload_date'][:4])}.png")
+
             cap = cv2.VideoCapture(video_direct_url)
             if not cap.isOpened():
                 print("Error: Could not open YouTube video stream in OpenCV.")
                 yt_loaded = False
             else:
-                window.display_current_frame()
-                window.update_field_canvas()
                 yt_loaded = True
     except Exception as e:
         print(f'Error: {e}')
@@ -255,37 +254,47 @@ class MainWindow(QMainWindow):
         dst_point_reshaped = cv2.perspectiveTransform(src_point_reshaped, homography_matrix)
         return dst_point_reshaped.reshape(-1,2)[0]
 
-    def display_current_frame(self):
+    def get_current_frame(self):
         global cap
         if 'cap' in globals() and cap.isOpened():
             ret, frame = cap.read()
             if ret:
-                self.current_raw_frame = frame.copy()                 
-                self.update_stream_canvas()
+                self.current_raw_frame = frame.copy()
+                self.current_frame = self.current_raw_frame.copy()
+    
+    def get_current_field(self):
+        self.current_field = field_image.copy()
 
 
-    def display_current_annotation(self):
-        global cap
-        if 'cap' in globals() and cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                self.current_raw_frame = model(frame.copy())[0].plot()
-                self.update_stream_canvas()
+    # def display_current_annotation(self):
+    #     global cap
+    #     if 'cap' in globals() and cap.isOpened():
+    #         ret, frame = cap.read()
+    #         if ret:
+    #             self.current_frame = model(frame.copy())[0].plot()
+    #             self.update_stream_canvas()
 
     def update_stream_homography_points(self):
-        
-        for point in homography_stream_points:
-            self.current_raw_frame = cv2.circle(self.current_raw_frame, point, 4, '#FF0000')
+        self.current_frame = self.current_raw_frame.copy()
+        for i, point in enumerate(homography_stream_points):
+            x, y = int(point[0]), int(point[1])
+            cv2.circle(self.current_frame, (x, y), 8, (0, 17 +i*8, 87 + i*40), -1)
+            cv2.rectangle(self.current_frame, (x,y), (x + 80, y - 20), (0, 17 +i*8, 87 + i*40), -1)
+            cv2.putText(self.current_frame, f"Point {i+1}", (x + 12, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         self.update_stream_canvas()
 
     def update_field_homography_points(self):
-        for point in homography_field_points:
-            self.current_raw_field = cv2.circle(self.current_raw_field, point, 4, "#FF0000")
+        self.current_field = field_image.copy()
+        for i, point in enumerate(homography_field_points):
+            x, y = int(point[0]), int(point[1])
+            cv2.circle(self.current_field, (x, y), 8, (0, 17 +i*8, 87 + i*40), -1)
+            cv2.rectangle(self.current_field, (x,y), (x + 80, y - 20), (0, 17 +i*8, 87 + i*40), -1)
+            cv2.putText(self.current_field, f"Point {i+1}", (x + 5, y-3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         self.update_field_canvas()
                 
     def update_stream_canvas(self):
-        if hasattr(self, 'current_raw_frame') and self.current_raw_frame is not None:
-            pixmap = cv_to_pixmap(self.current_raw_frame)
+        if hasattr(self, 'current_frame') and self.current_frame is not None:
+            pixmap = cv_to_pixmap(self.current_frame)
             scaled_pixmap = pixmap.scaled(
                     self.stream_label.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
@@ -296,7 +305,7 @@ class MainWindow(QMainWindow):
             self.stream_labelY = self.stream_label.geometry().y()
 
     def update_field_canvas(self):
-        pixmap = cv_to_pixmap(self.current_raw_field)
+        pixmap = cv_to_pixmap(self.current_field)
         scaled_pixmap = pixmap.scaled(
             self.field_label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -320,7 +329,8 @@ class MainWindow(QMainWindow):
         target_pos = max(0, current_pos + offset -1)
         print(f"fps: {fps}, step amount: {step_amount}, is_seconds: {is_seconds}, offset: {offset}, current_pos: {current_pos}, target pos: {target_pos}")
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_pos)
-        self.display_current_frame()
+        self.get_current_frame()
+        self.update_stream_canvas()
     
     def seek_frame(self, target_frame):
         global cap
@@ -328,7 +338,8 @@ class MainWindow(QMainWindow):
             return
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, target_frame))
-        self.display_current_frame()
+        self.get_current_frame()
+        self.update_stream_canvas()
     
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
@@ -369,6 +380,7 @@ class MainWindow(QMainWindow):
                 if self.stream_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
                     homography_stream_points.append((homographyX, homographyY))
                     self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY}) ⟶ ")
+                self.update_stream_homography_points()
 
             elif len(homography_stream_points) > len(homography_field_points):
                 adjustedX = mouseX-self.field_labelX
@@ -379,6 +391,7 @@ class MainWindow(QMainWindow):
                 if self.field_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
                     homography_field_points.append((homographyX, homographyY))
                     self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY})\n")
+                self.update_field_homography_points()
 
             if len(homography_stream_points) == 4 and len(homography_field_points) == 4:
                 self.start_button.setEnabled(True)
@@ -404,6 +417,7 @@ class MainWindow(QMainWindow):
     
     def get_new_yt(self):
         global yt_url, current_status
+        self.stream_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         if self.yt_link_input.text() != "":
             yt_url = self.yt_link_input.text()
             self.stream_label.setText("Loading...")
@@ -418,6 +432,10 @@ class MainWindow(QMainWindow):
                 control.setEnabled(yt_loaded)
 
             if yt_loaded:
+                self.get_current_frame()
+                self.update_stream_canvas()
+                self.get_current_field()
+                self.update_field_canvas()
                 self.setWindowTitle(f"Robot Tracking - {yt_vid_name}")
                 #Clear focus on the timeedit or youtube link area
                 self.yt_link_input.clearFocus()
@@ -464,7 +482,7 @@ class MainWindow(QMainWindow):
         self.step_frame(-1)
 
     def start_button_handler(self):
-        global homography_matrix, homography_mask
+        global homography_matrix,current_status
         if current_status == "calculate homography":
             src_points = np.array(homography_stream_points, dtype=np.float32).reshape(-1, 1, 2)
             dst_points = np.array(homography_field_points, dtype=np.float32).reshape(-1, 1, 2)
@@ -477,6 +495,9 @@ class MainWindow(QMainWindow):
                 confidence=0.995
                 )
             print(homography_matrix)
+            current_status = "homography done"
+        # elif current_status == "homography done"s
+
 
 app = QApplication(sys.argv)
 window = MainWindow()
