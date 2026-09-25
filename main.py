@@ -5,7 +5,7 @@ try:
     import cv2
     from PyQt6.QtWidgets import QApplication, QMainWindow, QHBoxLayout, QVBoxLayout, QFormLayout, QLabel, QWidget, QFrame, QPushButton, QLineEdit, QTimeEdit, QSpacerItem, QSizePolicy
     from PyQt6.QtGui import QImage, QPixmap, QFont, QResizeEvent
-    from PyQt6.QtCore import Qt, QPoint
+    from PyQt6.QtCore import Qt, QPoint, QThread, pyqtSignal
     from yt_dlp import YoutubeDL
     import pytesseract
     import numpy as np
@@ -16,6 +16,30 @@ except ImportError as e:
     print(f"Missing dependency: {e}")
     print("Please install them using 'pip install -r requirements.txt'")
     sys.exit(1)
+
+#Main YOLO thread
+class YOLOThread(QThread):
+    data_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.isRunning = True
+    
+    def run(self):
+        self.isRunning = True
+        counter = 0
+
+        while self.isRunning:
+            counter += 1
+            #Other YOLO STUFF HERE
+        
+        self.finished_signal.emit()
+
+    def stop(self):
+        self.isRunning = False
+
+
 
 #Variables and whatnot
 root = tk.Tk()
@@ -108,6 +132,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Robot Tracking")
         self.setMinimumSize(1320, 1080)
+        
+        #Main Thread for repeated position calculation
 
         #Central Widget setup
         central_widget = QWidget()
@@ -177,8 +203,8 @@ class MainWindow(QMainWindow):
         seconds_change_layout = QHBoxLayout()
         seconds_change_layout.addWidget(self.frame_back_button)
         seconds_change_layout.addWidget(self.frame_forward_button)
-        seconds_change_layout.addWidget(self.seconds_forward_button)
         seconds_change_layout.addWidget(self.seconds_back_button)
+        seconds_change_layout.addWidget(self.seconds_forward_button)
         seconds_change_layout.addWidget(self.seconds_change_increase_button)
         seconds_change_layout.addWidget(self.seconds_change_decrease_button)
         seconds_change_HLine = QFrame()
@@ -274,35 +300,23 @@ class MainWindow(QMainWindow):
     #             self.current_frame = model(frame.copy())[0].plot()
     #             self.update_stream_canvas()
 
-    def update_stream_homography_points(self):
-        first_color = (0,84,3)
-        last_color = (66,219,0)
-        self.current_frame = self.current_raw_frame.copy()
-        for i, point in enumerate(homography_stream_points):
-            point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / 3), 
-                           first_color[1] + i* int((last_color[1] - first_color[1]) / 3), 
-                           first_color[0] + i* int((last_color[2] - first_color[2]) / 3))
-            x, y = int(point[0]), int(point[1])
-            cv2.circle(self.current_frame, (x, y), 8, point_color, -1)
-            cv2.rectangle(self.current_frame, (x,y), (x + 80, y - 20), point_color, -1)
-            cv2.putText(self.current_frame, f"Point {i+1}", (x + 12, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        self.update_stream_canvas()
-
-    def update_field_homography_points(self):
-        first_color = (0,84,3)
-        last_color = (66,219,0)
-        self.current_field = field_image.copy()
-        for i, point in enumerate(homography_field_points):
-            point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / 3), 
-                           first_color[1] + i* int((last_color[1] - first_color[1]) / 3), 
-                           first_color[0] + i* int((last_color[2] - first_color[2]) / 3))
-            x, y = int(point[0]), int(point[1])
-            cv2.circle(self.current_field, (x, y), 8, point_color, -1)
-            cv2.rectangle(self.current_field, (x,y), (x + 80, y - 20), point_color, -1)
-            cv2.putText(self.current_field, f"Point {i+1}", (x + 5, y-3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        self.update_field_canvas()
                 
     def update_stream_canvas(self):
+        if current_status == "homography points":
+            list_length = len(homography_stream_points)
+            first_color = (0,84,3)
+            last_color = (66,219,0)
+            self.current_frame = self.current_raw_frame.copy()
+            if list_length <= len(homography_field_points) or list_length == 0:
+                cv2.rectangle(self.current_frame, (0,0), (yt_width, yt_height), (255,194,76), 8)
+            for i, point in enumerate(homography_stream_points):
+                point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / list_length), 
+                            first_color[1] + i* int((last_color[1] - first_color[1]) / list_length), 
+                            first_color[0] + i* int((last_color[2] - first_color[2]) / list_length))
+                x, y = int(point[0]), int(point[1])
+                cv2.circle(self.current_frame, (x, y), 8, point_color, -1)
+                cv2.rectangle(self.current_frame, (x,y), (x + 80, y - 20), point_color, -1)
+                cv2.putText(self.current_frame, f"Point {i+1}", (x + 12, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if hasattr(self, 'current_frame') and self.current_frame is not None:
             pixmap = cv_to_pixmap(self.current_frame)
             scaled_pixmap = pixmap.scaled(
@@ -315,15 +329,32 @@ class MainWindow(QMainWindow):
             self.stream_labelY = self.stream_label.geometry().y()
 
     def update_field_canvas(self):
-        pixmap = cv_to_pixmap(self.current_field)
-        scaled_pixmap = pixmap.scaled(
-            self.field_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.field_label.setPixmap(scaled_pixmap)
-        self.field_labelX = self.field_label.geometry().x()
-        self.field_labelY = self.field_label.geometry().y()
+        if current_status == "homography points":
+            list_length = len(homography_field_points)
+            first_color = (0,84,3)
+            last_color = (66,219,0)
+            self.current_field = field_image.copy()
+            if list_length < len(homography_stream_points):
+                cv2.rectangle(self.current_field, (0,0), (field_image_w, field_image_h), (255,194,76), 8)
+            for i, point in enumerate(homography_field_points):
+                point_color = (first_color[0] + i* int((last_color[0] - first_color[0]) / list_length), 
+                            first_color[1] + i* int((last_color[1] - first_color[1]) / list_length), 
+                            first_color[0] + i* int((last_color[2] - first_color[2]) / list_length))
+                x, y = int(point[0]), int(point[1])
+                cv2.circle(self.current_field, (x, y), 8, point_color, -1)
+                cv2.rectangle(self.current_field, (x,y), (x + 80, y - 20), point_color, -1)
+                cv2.putText(self.current_field, f"Point {i+1}", (x + 5, y-3), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        if hasattr(self, 'current_field',) and self.current_field is not None:
+            pixmap = cv_to_pixmap(self.current_field)
+            scaled_pixmap = pixmap.scaled(
+                self.field_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.field_label.setPixmap(scaled_pixmap)
+            self.field_labelX = self.field_label.geometry().x()
+            self.field_labelY = self.field_label.geometry().y()
 
     def step_frame(self, step_amount, is_seconds = False):
         global cap
@@ -354,16 +385,13 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
         self.update_stream_canvas()
+        self.update_field_canvas()
     
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Comma, Qt.Key.Key_Period) and yt_loaded:
-            self.handle_arrow_key(event.key())
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def handle_arrow_key(self, key):
-        if key == Qt.Key.Key_Right:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.setFocus()
+        elif key == Qt.Key.Key_Right:
             self.skip_seconds_forward()
         elif key == Qt.Key.Key_Left:
             self.skip_seconds_back()
@@ -375,12 +403,36 @@ class MainWindow(QMainWindow):
             self.decrease_frame()
         elif key == Qt.Key.Key_Period:
             self.increase_frame()
+        elif key == Qt.Key.Key_Backspace:
+            if current_status == "homography points" or current_status == "calculate homography":
+                homography_field_points_len = len(homography_field_points)
+                homography_stream_points_len = len(homography_stream_points)
+
+                if homography_stream_points_len > homography_field_points_len:
+                    homography_stream_points.pop()
+                    self.homography_points_label.setText(self.homography_points_label.text()[:self.homography_points_label.text().rfind("\n") + 1])
+                    self.homography_points_label.update()
+                elif homography_field_points_len >= homography_stream_points_len:
+                    homography_field_points.pop()
+                    self.homography_points_label.setText(self.homography_points_label.text()[:self.homography_points_label.text().rindex("⟶") + 1])
+                    self.homography_points_label.update()
+
+                if len(homography_stream_points) >= 4 and len(homography_field_points) >= 4:
+                    self.start_button.setEnabled(True)
+                    self.start_button.setText("Calculate Homography")
+                    current_status = "calculate homography"
+                self.update_field_canvas()
+                self.update_stream_canvas()
+
+
+        super().keyPressEvent(event)
+
 
     def mousePressEvent(self, event):
         global current_status, homography_field_points, homography_stream_points
         mouseX = event.position().x()
         mouseY = event.position().y()
-        if current_status == "homography points" and len(homography_field_points) <= 3:
+        if current_status == "homography points" or current_status == "calculate homography":
             if len(homography_stream_points) <= len(homography_field_points):
                 adjustedX = mouseX-self.stream_labelX
                 adjustedY = mouseY-self.stream_labelY
@@ -390,7 +442,6 @@ class MainWindow(QMainWindow):
                 if self.stream_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
                     homography_stream_points.append((homographyX, homographyY))
                     self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY}) ⟶ ")
-                self.update_stream_homography_points()
 
             elif len(homography_stream_points) > len(homography_field_points):
                 adjustedX = mouseX-self.field_labelX
@@ -401,12 +452,18 @@ class MainWindow(QMainWindow):
                 if self.field_label.pixmap().rect().contains(QPoint(int(adjustedX), int(adjustedY))):
                     homography_field_points.append((homographyX, homographyY))
                     self.homography_points_label.setText(f"{self.homography_points_label.text()}({homographyX},{homographyY})\n")
-                self.update_field_homography_points()
+            
+            self.update_stream_canvas()
+            self.update_field_canvas()
 
-            if len(homography_stream_points) == 4 and len(homography_field_points) == 4:
+            if len(homography_stream_points) >= 4 and len(homography_field_points) >= 4:
                 self.start_button.setEnabled(True)
                 self.start_button.setText("Calculate Homography")
                 current_status = "calculate homography"
+            else:
+                self.start_button.setEnabled(False)
+                self.start_button.setText("Select 4 or more points")
+                current_status = "homography points"
         return super().mousePressEvent(event)
 
     
@@ -451,13 +508,16 @@ class MainWindow(QMainWindow):
                 self.yt_link_input.clearFocus()
                 self.setFocus()
                 current_status = "homography points"
+                self.start_button.setText("Select 4 or more points")
                 self.stream_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
                 self.field_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-                # # stream_pixmap_w = self.stream_label.pixmap().size().width()
-                # # stream_pixmap_h =self.stream_label.pixmap().size().height()
-                # # field_pixmap_h = self.field_label.pixmap().size().height()
-                # # self.setMinimumSize(360+stream_pixmap_w/2, self.stream_label.pixmap().size().height()*2 + self.field_label.pixmap().size().height()*2)
-                # self.setMinimumSize(360+int(self.stream_label.pixmap().size().width()/2), int(self.stream_label.pixmap().size().height()/2) + int(self.field_label.pixmap().size().height()/2))
+                self.update_stream_canvas()
+
+                stream_area_target_width = 600
+                min_w = 360 + stream_area_target_width
+                min_h = int(yt_height*(stream_area_target_width / yt_width) + field_image_h * (stream_area_target_width / field_image_w))
+
+                self.setMinimumSize(min_w, min_h)
             else:
                 self.stream_label.setText("Error Loading YT - Please try again")
 
@@ -506,7 +566,10 @@ class MainWindow(QMainWindow):
                 )
             print(homography_matrix)
             current_status = "homography done"
-        # elif current_status == "homography done"s
+        # elif current_status == "homography done" or current_status == "paused":
+            
+        # elif current_status == "working":
+
 
 
 app = QApplication(sys.argv)
